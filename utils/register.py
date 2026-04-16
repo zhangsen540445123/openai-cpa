@@ -462,6 +462,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
             json_body={"username": {"value": email, "kind": "email"}, "screen_hint": "signup"},
             proxies=proxies,
         )
+
         if signup_resp.status_code == 403:
             print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）注册请求触发 403 拦截，稍作等待后重试...")
             return "retry_403", None
@@ -476,7 +477,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                 is_takeover = True
                 print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）该邮箱已注册！准备走【无密码邮箱验证码】接管登录...")
                 login_ctx = reg_ctx.copy() if reg_ctx else {}
-                sentinel_login = generate_payload(did=did, flow="password-verify", proxy=proxy, user_agent=current_ua,
+                sentinel_login = generate_payload(did=did, flow="password_verify", proxy=proxy, user_agent=current_ua,
                                                   impersonate="chrome110", ctx=login_ctx)
                 login_send_headers = _oai_headers(did, {
                     "Referer": "https://auth.openai.com/log-in/password",
@@ -504,7 +505,8 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                     "https://auth.openai.com/api/accounts/passwordless/send-otp",
                     headers=login_send_headers, proxies=proxies, timeout=30,
                 )
-                if signup_resp.status_code != 200:
+
+                if sentinel_login_resp.status_code != 200:
                     print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）邮件发送异常, 返回: {sentinel_login_resp.status_code}")
                     return None, None
 
@@ -515,7 +517,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                         print(f"\n[{cfg.ts()}] [INFO] 未收到登录验证码正在重试 {resend_attempt}/{cfg.MAX_OTP_RETRIES}...")
                         try:
                             sentinel_resend = generate_payload(did=did, flow="authorize_continue", proxy=proxy,
-                                                               user_agent=current_ua, impersonate="chrome110", ctx=reg_ctx)
+                                                               user_agent=current_ua, impersonate="chrome110", ctx=login_ctx)
                             resend_headers = _oai_headers(did, {
                                 "Referer": "https://auth.openai.com/create-account/password",
                                 "content-type": "application/json"
@@ -543,7 +545,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                     return None, None
 
                 login_sentinel_otp = generate_payload(did=did, flow="authorize_continue", proxy=proxy, user_agent=current_ua,
-                                                impersonate="chrome110", ctx=reg_ctx)
+                                                impersonate="chrome110", ctx=login_ctx)
                 val_headers = _oai_headers(did, {
                     "Referer": "https://auth.openai.com/email-verification",
                     "content-type": "application/json",
@@ -591,6 +593,13 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
             )
 
             if pwd_resp.status_code != 200:
+                err_json = pwd_resp.json()
+                err_code = err_json.get("error", {}).get("code")
+                err_msg = err_json.get("error", {}).get("message", "")
+                if err_code is None and "Failed to create account" in err_msg:
+                    print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）遭遇底层影子风控 (无明确代码拦截)！当前 IP 域名 可能已黑。")
+                    if run_ctx is not None: run_ctx['pwd_blocked'] = True
+                    return None, None
                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）设密码环节被拦截，返回: {pwd_resp.status_code}，该提示可忽略，不影响后面执行流程")
                 if run_ctx is not None: run_ctx['pwd_blocked'] = True
                 return None, None
@@ -699,17 +708,24 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                 code_account_url = code_account_json.get("continue_url", "")
 
                 if "/add-phone" in code_account_url:
-                    print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}） 账号创建过程触发手机风控，进入 HeroSMS 手机号验证流程...")
-                    ok, next_url_or_reason = _try_verify_phone_via_hero_sms(
-                        session=s_reg,
-                        proxies=proxies,
-                        hint_url=code_account_url
-                    )
+                    print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}） 账号创建过程触发手机风控，进入 HeroSMS 手机号验证流程...")
+                    print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}） 重点提示：有些邮箱接码后也无法创建成功账号，可能Oauth阶段还需要接码，请自行斟酌...")
+                    if bool(cfg.HERO_SMS_ENABLED) and bool(cfg.HERO_SMS_VERIFY_ON_REGISTER):
+                        ok, next_url_or_reason = _try_verify_phone_via_hero_sms(
+                            session=s_reg,
+                            proxies=proxies,
+                            hint_url=code_account_url
+                        )
 
-                    if ok and next_url_or_reason:
-                        print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}） 手机验证成功，继续创建账号: {next_url_or_reason}")
+                        if ok and next_url_or_reason:
+                            print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}） 手机验证成功，继续创建账号: {next_url_or_reason}")
+                        else:
+                            print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） {next_url_or_reason}")
+                            if run_ctx is not None: run_ctx['phone_verify'] = True
+                            return None, None
                     else:
-                        print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） {next_url_or_reason}")
+                        print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}） HeroSMS主开关 或 创建时接码开关未开启，如果不想花钱接码请忽略该条提示")
+                        if run_ctx is not None: run_ctx['phone_verify'] = True
                         return None, None
 
             user_info = generate_random_user_info()
@@ -734,9 +750,25 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
             )
 
             if create_account_resp.status_code != 200:
-                run_ctx['signup_blocked'] = True
-                print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）账户创建受阻，疑似被标记为账号已存在，返回: {create_account_resp.status_code}，该提示可忽略，不影响后面执行流程")
-                return None, None
+                err_json = create_account_resp.json()
+                err_code = str(err_json.get("error", {}).get("code", "")).strip()
+                err_msg = str(err_json.get("error", {}).get("message", "")).strip()
+                if err_code == "identity_provider_mismatch":
+                    try:
+                        is_takeover = True
+                        print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）检测到第三方登录账号！强行变道走无密码 OTP...")
+                        print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）已打上接管标记，交由 OAuth 提取流程进行无密码登录...")
+                    except Exception as e:
+                         pass
+
+                if not is_takeover:
+                    if "been deleted or deactivated" in err_msg:
+                        print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）您没有帐户，因为它已被删除或停用。如果您认为这是一个错误，请通过我们的帮助中心help.openai.com.与我们联系")
+                        run_ctx['signup_blocked'] = True
+                        return None, None
+                    run_ctx['signup_blocked'] = True
+                    print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）账户创建受阻，疑似被标记为账号已存在，返回: {create_account_resp.status_code}，该提示可忽略，不影响后面执行流程")
+                    return None, None
 
             try:
                 create_json = create_account_resp.json() or {}
@@ -872,7 +904,8 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                     "https://auth.openai.com/api/accounts/passwordless/send-otp",
                     headers=login_send_headers, proxies=proxies, timeout=30,
                 )
-                if signup_resp.status_code != 200:
+
+                if sentinel_login_resp.status_code != 200:
                     print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）邮件发送异常, 返回: {sentinel_login_resp.status_code}")
                     return None, None
 
@@ -929,7 +962,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                     print(f"[{cfg.ts()}] [SUCCESS] （{mask_email(email)}）老帐号OAuth 阶段验证码通过！")
                     password = "Takeover_NoPassword"
                 else:
-                    print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）老帐号OAuth 阶段验证码未通过: {login_code_resp.status_code}")
+                    print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）老帐号OAuth 阶段验证码未通过: {login_code_resp.status_code}{login_code_resp.json()}")
                     return None, None
 
                 next_url = str(login_code_resp.json().get("continue_url") or "").strip()
