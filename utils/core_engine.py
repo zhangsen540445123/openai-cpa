@@ -658,6 +658,8 @@ def run_and_refresh(proxy, args, cpa_upload=False, skip_switch=False):
         result = run(proxy, run_ctx=run_ctx)
     except Exception as e:
         print(f"[{ts()}] [ERROR] 注册线程发生未捕获异常{e}")
+        import traceback
+        traceback.print_exc()
 
     return handle_registration_result(result, cpa_upload=cpa_upload, run_ctx=run_ctx)
 
@@ -1427,6 +1429,8 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event, executor=None
         except Exception as e:
             print(f"[{ts()}] [ERROR] Sub2API 循环发生致命异常: {e}")
             print(f"[{ts()}] [INFO] 触发安全保护，系统已自动停止运行。")
+            import traceback
+            traceback.print_exc()
             async_stop_event.set()
             break
 
