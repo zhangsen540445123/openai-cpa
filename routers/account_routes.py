@@ -931,13 +931,17 @@ async def api_upgrade_image_oauth(req: UpgradeOAuthReq, token: str = Depends(ver
                 try:
                     td = json.loads(raw_token) if isinstance(raw_token, str) else raw_token
                     acc_token = td.get("access_token", "")
+                    device_id = td.get("device_id", "")
+                    user_agent = td.get("user_agent", "")
                 except Exception:
                     pass
 
             target_accounts.append({
                 "email": a["email"],
                 "password": a["password"],
-                "access_token": acc_token
+                "access_token": acc_token,
+                "device_id": device_id,
+                "user_agent": user_agent
             })
     else:
         for email in req.emails:
@@ -949,13 +953,17 @@ async def api_upgrade_image_oauth(req: UpgradeOAuthReq, token: str = Depends(ver
                     try:
                         td = json.loads(raw_token) if isinstance(raw_token, str) else raw_token
                         acc_token = td.get("access_token", "")
+                        device_id = td.get("device_id", "")
+                        user_agent = td.get("user_agent", "")
                     except Exception:
                         pass
 
                 target_accounts.append({
                     "email": email,
                     "password": info.get("password"),
-                    "access_token": acc_token
+                    "access_token": acc_token,
+                    "device_id": device_id,
+                    "user_agent": user_agent
                 })
 
     if not target_accounts:

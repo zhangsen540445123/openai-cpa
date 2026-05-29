@@ -533,7 +533,7 @@ def run(
                                 print(f"[{cfg.ts()}] [ERROR] [IMAGE2API] （{mask_email(email)}）同步失败: {msg}")
                     if getattr(cfg, "IMAGE2API_IMG_ONLY_MODE", False):
                         print(f"[{cfg.ts()}] [INFO] 当前为仅注册img模式")
-                        res_payload = json.dumps({"email": email, "status": "image2api", "access_token": data})
+                        res_payload = json.dumps({"email": email, "status": "image2api", "access_token": data, "device_id": did, "user_agent": current_ua})
                         return res_payload, password
                     elif getattr(cfg, "NORMAL_SAVE_IMG_TO_LOCAL", False):
                         try:
@@ -559,7 +559,7 @@ def run(
                                 print(f"[{cfg.ts()}] [ERROR] [IMAGE2API] （{mask_email(email)}）同步失败: {msg}")
                     if getattr(cfg, "IMAGE2API_IMG_ONLY_MODE", False):
                         print(f"[{cfg.ts()}] [INFO] 当前为仅注册img模式")
-                        res_payload = json.dumps({"email": email, "status": "image2api", "access_token": data})
+                        res_payload = json.dumps({"email": email, "status": "image2api", "access_token": data, "device_id": did, "user_agent": current_ua})
                         return res_payload, password
                     elif getattr(cfg, "IMAGE2API_RETAIN_REG_ONLY", False):
                         try:
@@ -1051,7 +1051,7 @@ def run(
                 pass
 
 
-def run_oauth_only(email: str, password: str, proxy: Optional[str], access_token: str = "") -> tuple:
+def run_oauth_only(email: str, password: str, proxy: Optional[str], run_ctx: dict = None, access_token: str = "", device_id: str = "", user_agent: str = "") -> tuple:
     processed_mails: set = set()
     proxy = cfg.format_docker_url(proxy)
     if proxy and proxy.startswith("socks5://"):
@@ -1059,7 +1059,7 @@ def run_oauth_only(email: str, password: str, proxy: Optional[str], access_token
     proxies = {"http": proxy, "https": proxy} if proxy else None
 
     s_log = None
-    run_ctx = {}
+
     saved_temp_at = access_token
     sys_handle_a = ""
     sys_handle_b = ""
@@ -1069,8 +1069,12 @@ def run_oauth_only(email: str, password: str, proxy: Optional[str], access_token
 
     try:
         s_init = requests.Session(proxies=proxies, impersonate="chrome110")
-        did, current_ua = init_auth(session=s_init, email=email, masked_email=mask_email(email), proxies=proxies,
-                                    verify=_ssl_verify())
+        if device_id and user_agent:
+            did = device_id
+            current_ua = user_agent
+        else:
+            did, current_ua = init_auth(session=s_init, email=email, masked_email=mask_email(email), proxies=proxies,
+                                        verify=_ssl_verify())
 
         if getattr(cfg, 'TEAM_MODE_ENABLE', False) and saved_temp_at:
             print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）即将进入团队静默流程")
@@ -1287,7 +1291,6 @@ def run_oauth_only(email: str, password: str, proxy: Optional[str], access_token
                             print(f"[{cfg.ts()}] [WARNING] LuckMail 可用性检测异常(忽略并继续): {e}")
 
                     print(f"\n[{cfg.ts()}] [INFO] （{mask_email(email)}）静默登录需要验证码，主动触发发送...")
-
                     code2 = ""
                     code2_resp = None
                     for resend_attempt in range(max(1, cfg.MAX_OTP_RETRIES)):

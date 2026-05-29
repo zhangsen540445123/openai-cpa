@@ -1734,17 +1734,41 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event, executor=None
             break
 
 # 独立OAuth
-def handle_oauth_upgrade_result(email: str, result: Any) -> str:
+def handle_oauth_upgrade_result(email: str, result: Any, run_ctx: dict = None) -> str:
 
     if getattr(cfg, 'GLOBAL_STOP', False):
         return "stopped"
+    global run_stats
+    fail_reason = "提权失败/被风控"
+    if run_ctx:
+        if run_ctx.get('pwd_blocked'):
+            with _stats_lock: run_stats["pwd_blocked"] += 1
+        if run_ctx.get('phone_verify'):
+            with _stats_lock: run_stats["phone_verify"] += 1
 
     if not result or not isinstance(result, (tuple, list)) or len(result) < 2:
+        with _stats_lock:
+            run_stats["failed"] += 1
+        try:
+            db_manager.update_account_status([email], 0)
+            print(f"[{ts()}] [WARNING] [提权] {mask_email(email)} 提权失败，已禁用")
+        except:
+            pass
         return "failed"
 
     token_json_str, password = result
     if not token_json_str or token_json_str == "retry_403":
+        with _stats_lock:
+            run_stats["failed"] += 1
+        try:
+            db_manager.update_account_status([email], 0)
+            print(f"[{ts()}] [WARNING] [提权] {mask_email(email)} 提权失败，已标记为禁用")
+        except:
+            pass
         return "failed"
+
+    with _stats_lock:
+        run_stats["success"] += 1
 
     token_data = json.loads(token_json_str)
     if "email" not in token_data:
@@ -1753,7 +1777,8 @@ def handle_oauth_upgrade_result(email: str, result: Any) -> str:
 
     try:
         db_manager.update_account_token_only(email, token_json_str)
-        print(f"[{ts()}] [SUCCESS] [提权] {mask_email(email)} 本地凭证已更新")
+        db_manager.update_account_status([email], 1)
+        print(f"[{ts()}] [SUCCESS] [提权] {mask_email(email)} 本地有效凭证已同步覆盖更新")
     except Exception as e:
         print(f"[{ts()}] [ERROR] 本地库更新失败: {e}")
 
@@ -1804,39 +1829,54 @@ def handle_oauth_upgrade_result(email: str, result: Any) -> str:
     return "success"
 
 
-def run_oauth_only_and_sync(email, password, proxy, args, access_token=""):
+def run_oauth_only_and_sync(email, password, proxy, args, access_token="", device_id="", user_agent=""):
     proxy = format_docker_url(proxy)
     if not smart_switch_node(proxy):
         print(f"[{ts()}] [WARNING] {proxy} 节点切换失败...")
 
+    run_ctx = {
+        'pwd_blocked': False,
+        'phone_verify': False
+    }
+
     try:
         from utils.auth_pipeline.register import run_oauth_only
-        # 关键修改：把 access_token 传给底层函数
-        result = run_oauth_only(email, password, proxy, access_token)
+        result = run_oauth_only(email, password, proxy, run_ctx=run_ctx, access_token=access_token, device_id=device_id, user_agent=user_agent)
     except Exception as e:
         print(f"[{ts()}] [ERROR] 提权线程发生异常 {e}")
         import traceback
         traceback.print_exc()
         result = None
-    return handle_oauth_upgrade_result(email, result)
+    return handle_oauth_upgrade_result(email, result, run_ctx=run_ctx)
 
 
 def oauth_upgrade_main_loop(args, target_accounts: list, stop_event: threading.Event, executor=None):
+    total_tasks = len(target_accounts)
     print(f"\n[{ts()}] [系统] >>> 启动独立 OAuth 批量提取任务 <<<")
-    print(f"[{ts()}] [系统] 目标队列共计 {len(target_accounts)} 个半成品账号待处理。")
+    print(f"[{ts()}] [系统] 目标队列共计 {total_tasks} 个半成品账号待处理。")
+    global run_stats
+    with _stats_lock:
+        run_stats["success"] = 0
+        run_stats["failed"] = 0
+        run_stats["retries"] = 0
+        run_stats["pwd_blocked"] = 0
+        run_stats["phone_verify"] = 0
+        run_stats["start_time"] = time.time()
+        run_stats["target"] = total_tasks
 
     max_workers = getattr(cfg, 'REG_THREADS', 4)
-    success_count = 0
 
     def _worker(acc):
         if stop_event.is_set() or getattr(cfg, 'GLOBAL_STOP', False):
             return "stopped"
-        acc_token = acc.get('access_token', '')
 
+        acc_token = acc.get('access_token', '')
+        device_id = acc.get('device_id', '')
+        user_agent = acc.get('user_agent', '')
         if cfg.is_raw_proxy_pool_enabled():
             borrowed_generation, p = cfg.unpack_proxy_queue_item(cfg.PROXY_QUEUE.get())
             try:
-                return run_oauth_only_and_sync(acc['email'], acc['password'], p, args, acc_token)
+                return run_oauth_only_and_sync(acc['email'], acc['password'], p, args, acc_token, device_id, user_agent)
             finally:
                 if cfg.should_return_pooled_proxy(borrowed_generation):
                     cfg.PROXY_QUEUE.put(cfg.make_proxy_queue_item(p, borrowed_generation))
@@ -1845,40 +1885,28 @@ def oauth_upgrade_main_loop(args, target_accounts: list, stop_event: threading.E
             p = cfg.PROXY_QUEUE.get()
             proxy_url = p[-1] if isinstance(p, tuple) else p
             try:
-                return run_oauth_only_and_sync(acc['email'], acc['password'], proxy_url, args, acc_token)
+                return run_oauth_only_and_sync(acc['email'], acc['password'], proxy_url, args, acc_token, device_id, user_agent)
             finally:
                 cfg.PROXY_QUEUE.put(p)
                 cfg.PROXY_QUEUE.task_done()
         else:
-            return run_oauth_only_and_sync(acc['email'], acc['password'], args.proxy, args, acc_token)
+            return run_oauth_only_and_sync(acc['email'], acc['password'], args.proxy, args, acc_token, device_id, user_agent)
 
     try:
         if executor is not None:
-            futures = []
-            for acc in target_accounts:
-                if stop_event.is_set() or getattr(cfg, 'GLOBAL_STOP', False):
-                    break
-                futures.append(executor.submit(_worker, acc))
-
-            for f in futures:
-                if f.result() == "success":
-                    success_count += 1
+            futures = [executor.submit(_worker, acc) for acc in target_accounts]
         else:
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futures = []
-                for acc in target_accounts:
-                    if stop_event.is_set() or getattr(cfg, 'GLOBAL_STOP', False):
-                        break
-                    futures.append(ex.submit(_worker, acc))
+                futures = [ex.submit(_worker, acc) for acc in target_accounts]
 
-                for f in futures:
-                    if f.result() == "success":
-                        success_count += 1
+        import concurrent.futures
+        for f in concurrent.futures.as_completed(futures):
+            pass
 
     except Exception as e:
         print(f"[{ts()}] [ERROR] 提权调度发生异常: {e}")
 
-    print(f"\n[{ts()}] [系统] <<< OAuth 批量提取任务结束，共成功提取 {success_count} 个 >>>")
+    print(f"\n[{ts()}] [系统] <<< OAuth 批量提取任务结束 >>>")
 
 def main() -> None:
     reload_all_configs()

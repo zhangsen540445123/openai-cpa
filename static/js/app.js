@@ -5005,6 +5005,7 @@ async exportSub2Api() {
             this.selectedImageAccounts = [];
         },
         async triggerOAuthUpgrade(emailsParam) {
+            this.currentTab = 'console';
             try {
                 const res = await this.authFetch('/api/image_accounts/upgrade_oauth', {
                     method: 'POST',

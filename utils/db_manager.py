@@ -306,7 +306,7 @@ def get_image_accounts_page(page: int = 1, page_size: int = 50, search: str = No
     try:
         with get_db_conn() as conn:
             c = get_cursor(conn)
-            conditions = ["token_data LIKE '%\"image2api\"%'"]
+            conditions = ["token_data LIKE '%\"image2api\"%'", "is_active = 1"]
             params = []
 
             if search:
