@@ -548,6 +548,25 @@ def process_account_worker(i: int, total: int, item: dict, args: Any) -> bool:
         print(f"[{ts()}] [WARNING] {mask_email(name)} 未找到有效数据，无法抢救")
 
     if not refresh_success:
+        if getattr(cfg, 'CPA_AUTO_RE_OAUTH', False):
+            print(f"[{ts()}] [INFO] 测活: {mask_email(name)} 尝试终极抢救 -> 自动重走 OAuth 提权流程")
+            full_info = db_manager.get_account_full_info(email)
+            if full_info:
+                password = full_info.get("password")
+                if not password:
+                    print(f"[{ts()}] [INFO] 测活: {mask_email(name)} 无密码记录，将尝试 [无密码 OTP] 通道提取")
+                    password = "Takeover_NoPassword"
+
+                raw_token = full_info.get("token_data", {})
+                acc_token = raw_token.get("access_token", "") if isinstance(raw_token, dict) else ""
+                device_id = raw_token.get("device_id", "") if isinstance(raw_token, dict) else ""
+                user_agent = raw_token.get("user_agent", "") if isinstance(raw_token, dict) else ""
+                res = run_oauth_only_and_sync(email, password, args.proxy, args, access_token=acc_token,
+                                              device_id=device_id, user_agent=user_agent)
+                if res == "success":
+                    return True
+            else:
+                print(f"[{ts()}] [WARNING] 测活: {mask_email(name)} 本地库彻底查无此号，放弃抢救")
         try:
             db_manager.update_account_status([email], 0)
         except Exception:
@@ -660,6 +679,13 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
         with _stats_lock: run_stats["success"] += 1
         token_data    = json.loads(token_json_str)
         account_email = token_data.get("email", "unknown")
+        if run_ctx and run_ctx.get('device_id') and run_ctx.get('user_agent'):
+            token_data['device_id'] = run_ctx['device_id']
+            token_data['user_agent'] = run_ctx['user_agent']
+            token_json_str = json.dumps(token_data, ensure_ascii=False)
+
+
+
         domain_result = mail_service.record_domain_success(account_email if account_email and "@" in account_email else cur_dom)
         if domain_result:
             cooldown_text = _format_cooldown_time(domain_result.get("cooldown_until", 0.0))
@@ -913,6 +939,7 @@ def _handle_sub2api_dead_account(item: dict, client: Any, is_disabled: bool) -> 
     else:
         print(f"[{ts()}] [ERROR] 凭证 {mask_email(name)} 已死亡，当前已是禁用状态，根据配置保留不删除。")
 
+
 def process_sub2api_worker(i: int, total: int, item: dict, client: Any, args: Any) -> bool:
     """Sub2API 测活 Worker（使用 Sub2API /test SSE 接口）"""
     if hasattr(args, 'check_stop') and args.check_stop(): return False
@@ -946,70 +973,72 @@ def process_sub2api_worker(i: int, total: int, item: dict, client: Any, args: An
         return False
 
     print(f"[{ts()}] [ERROR] Sub2API测活: {mask_email(name)} 测活失败 ({reason})")
-
+    refresh_success = False
     if not cfg.SUB2API_ENABLE_TOKEN_REVIVE:
+        print(f"[{ts()}] [ERROR] Token 普通复活已关闭。")
+    else:
+        refresh_token_val = item.get("credentials", {}).get("refresh_token")
+        if not refresh_token_val:
+            print(f"[{ts()}] [ERROR] {mask_email(name)} 无 refresh_token，跳过普通刷新")
+        else:
+            print(f"[{ts()}] [INFO] {mask_email(name)} 尝试刷新 Token...")
+            proxies = {"http": args.proxy, "https": args.proxy} if args.proxy else None
+            ok, new_tokens = refresh_oauth_token(refresh_token_val, proxies=proxies)
+
+            if not ok:
+                err_info = new_tokens.get('error', '未知') if isinstance(new_tokens, dict) else str(new_tokens)
+                print(f"[{ts()}] [ERROR] {mask_email(name)} Token 刷新失败: {err_info}")
+            else:
+                print(f"[{ts()}] [INFO] {mask_email(name)} Token 刷新成功，同步至 Sub2API...")
+                item.setdefault("credentials", {}).update(new_tokens)
+                up_ok, up_msg = client.update_account(account_id, item)
+
+                if not up_ok:
+                    print(f"[{ts()}] [ERROR] {mask_email(name)} 更新回 Sub2API 失败: {up_msg}")
+                else:
+                    print(f"[{ts()}] [INFO] {mask_email(name)} Token 已更新，二次验证中...")
+                    result2, reason2 = client.test_account(account_id)
+
+                    if result2 == "ok":
+                        print(f"[{ts()}] [SUCCESS] {mask_email(name)} 刷新复活成功，二次验证通过！")
+                        try:
+                            db_manager.update_account_status_by_truncated_name(name, 1)
+                        except Exception:
+                            pass
+                        refresh_success = True
+                    else:
+                        print(f"[{ts()}] [ERROR] {mask_email(name)} 二次验证失败 ({reason2})，账号确认已死")
+
+    if not refresh_success:
+        if getattr(cfg, 'SUB2API_AUTO_RE_OAUTH', False):
+            print(f"[{ts()}] [INFO] Sub2API测活: {mask_email(name)} 尝试终极抢救 -> 重走 OAuth 提权流程")
+            full_info = db_manager.get_account_full_info(name)
+
+            if full_info:
+                password = full_info.get("password")
+                if not password:
+                    print(f"[{ts()}] [INFO] Sub2API测活: {mask_email(name)} 无密码记录，将尝试 [无密码 OTP] 通道提取")
+                    password = "Takeover_NoPassword"
+
+                raw_token = full_info.get("token_data", {})
+                acc_token = raw_token.get("access_token", "") if isinstance(raw_token, dict) else ""
+                device_id = raw_token.get("device_id", "") if isinstance(raw_token, dict) else ""
+                user_agent = raw_token.get("user_agent", "") if isinstance(raw_token, dict) else ""
+
+                res = run_oauth_only_and_sync(name, password, args.proxy, args, access_token=acc_token,
+                                              device_id=device_id, user_agent=user_agent)
+                if res == "success":
+                    return True
+            else:
+                print(f"[{ts()}] [WARNING] Sub2API测活: {mask_email(name)} 本地库彻底查无此号，放弃抢救")
         try:
             db_manager.update_account_status_by_truncated_name(name, 0)
         except Exception:
             pass
-        print(f"[{ts()}] [ERROR] Token 复活已关闭，直接执行死亡处理")
         _handle_sub2api_dead_account(item, client, is_disabled=False)
         return False
 
-    refresh_token_val = item.get("credentials", {}).get("refresh_token")
-    if not refresh_token_val:
-        try:
-            db_manager.update_account_status_by_truncated_name(name, 0)
-        except Exception:
-            pass
-        print(f"[{ts()}] [ERROR] {mask_email(name)} 无 refresh_token，执行死亡处理")
-        _handle_sub2api_dead_account(item, client, is_disabled=False)
-        return False
-
-    print(f"[{ts()}] [INFO] {mask_email(name)} 尝试刷新 Token...")
-    proxies = {"http": args.proxy, "https": args.proxy} if args.proxy else None
-    ok, new_tokens = refresh_oauth_token(refresh_token_val, proxies=proxies)
-
-    if not ok:
-        err_info = new_tokens.get('error', '未知') if isinstance(new_tokens, dict) else str(new_tokens)
-        print(f"[{ts()}] [ERROR] {mask_email(name)} Token 刷新失败: {err_info}")
-        try:
-            db_manager.update_account_status_by_truncated_name(name, 0)
-        except Exception:
-            pass
-        _handle_sub2api_dead_account(item, client, is_disabled=False)
-        return False
-
-    print(f"[{ts()}] [INFO] {mask_email(name)} Token 刷新成功，同步至 Sub2API...")
-    item.setdefault("credentials", {}).update(new_tokens)
-    up_ok, up_msg = client.update_account(account_id, item)
-    if not up_ok:
-        print(f"[{ts()}] [ERROR] {mask_email(name)} 更新回 Sub2API 失败: {up_msg}")
-        _handle_sub2api_dead_account(item, client, is_disabled=False)
-        try:
-            db_manager.update_account_status_by_truncated_name(name, 0)
-        except Exception:
-            pass
-        return False
-
-    print(f"[{ts()}] [INFO] {mask_email(name)} Token 已更新，二次验证中...")
-    result2, reason2 = client.test_account(account_id)
-
-    if result2 == "ok":
-        print(f"[{ts()}] [SUCCESS] {mask_email(name)} 刷新复活成功，二次验证通过！")
-        try:
-            db_manager.update_account_status_by_truncated_name(name, 1)
-        except Exception:
-            pass
-        return True
-
-    print(f"[{ts()}] [ERROR] {mask_email(name)} 二次验证失败 ({reason2})，账号确认已死")
-    try:
-        db_manager.update_account_status_by_truncated_name(name, 0)
-    except Exception:
-        pass
-    _handle_sub2api_dead_account(item, client, is_disabled=False)
-    return False
+    return refresh_success
 
 def normal_main_loop(args, stop_event: threading.Event, executor=None):
     """常规量产模式（纯数据库保存）"""
@@ -1773,7 +1802,12 @@ def handle_oauth_upgrade_result(email: str, result: Any, run_ctx: dict = None) -
     token_data = json.loads(token_json_str)
     if "email" not in token_data:
         token_data["email"] = email
-        token_json_str = json.dumps(token_data, ensure_ascii=False)
+
+    if run_ctx and run_ctx.get('device_id') and run_ctx.get('user_agent'):
+        token_data['device_id'] = run_ctx['device_id']
+        token_data['user_agent'] = run_ctx['user_agent']
+
+    token_json_str = json.dumps(token_data, ensure_ascii=False)
 
     try:
         db_manager.update_account_token_only(email, token_json_str)
