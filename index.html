@@ -3029,16 +3029,30 @@
                                                                         @click="config.fivesim.country = item.country; config.fivesim.operator = route.provider; showToast('已切换至: ' + item.name + ' (线路 ' + route.provider + ')', 'success')"
                                                                         class="relative flex flex-col bg-white border border-teal-100 rounded-xl p-3 hover:border-teal-400 hover:shadow-md hover:-translate-y-0.5 active:scale-95 transition-all text-left min-w-[130px] group/card overflow-hidden"
                                                                         :class="{'ring-2 ring-teal-500 border-transparent bg-teal-50/40': config.fivesim.country === item.country && config.fivesim.operator === route.provider}">
+
                                                                     <div v-if="config.fivesim.country === item.country && config.fivesim.operator === route.provider" class="absolute top-0 right-0 w-0 h-0 border-t-[28px] border-r-[28px] border-t-transparent border-r-teal-500">
                                                                         <svg class="absolute -top-[23px] -right-[24px] w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
                                                                     </div>
-                                                                    <div class="flex justify-between items-center w-full mb-2.5 gap-4">
-                                                                        <span class="text-[10px] font-black text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded uppercase tracking-wider border border-teal-200/50 max-w-[80px] truncate" :title="route.provider">
-                                                                            {{ route.provider }}
-                                                                        </span>
+
+                                                                    <div class="flex justify-between items-start w-full mb-2.5 gap-4">
+                                                                        <div class="flex flex-col gap-1.5 items-start">
+                                                                            <span class="text-[10px] font-black text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded uppercase tracking-wider border border-teal-200/50 max-w-[80px] truncate" :title="route.provider">
+                                                                                {{ route.provider }}
+                                                                            </span>
+                                                                            <span v-if="route.delivery !== undefined"
+                                                                                  :class="{
+                                                                                      'text-emerald-600 bg-emerald-50 border-emerald-200': route.delivery >= 60,
+                                                                                      'text-orange-600 bg-orange-50 border-orange-200': route.delivery >= 20 && route.delivery < 60,
+                                                                                      'text-slate-400 bg-slate-50 border-slate-200': route.delivery < 0
+                                                                                  }"
+                                                                                  class="text-[9px] font-bold px-1.5 py-0.5 rounded border shadow-sm tracking-tight whitespace-nowrap">
+                                                                                {{ route.delivery >= 0 ? `成功率: ${route.delivery}%` : '成功率 < 20%' }}
+                                                                            </span>
+                                                                        </div>
                                                                         <span class="text-sm font-black text-emerald-600">${{ route.cost }}</span>
                                                                     </div>
-                                                                    <div class="text-[11px] text-slate-500 font-mono font-medium flex items-center gap-1.5">
+
+                                                                    <div class="text-[11px] text-slate-500 font-mono font-medium flex items-center gap-1.5 mt-auto">
                                                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>
                                                                         库存: <span class="text-slate-700 font-bold">{{ route.count }}</span>
                                                                     </div>
