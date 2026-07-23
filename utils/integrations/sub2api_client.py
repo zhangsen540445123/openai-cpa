@@ -2,6 +2,7 @@ import json
 import logging
 import threading
 import time
+import uuid
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
@@ -206,7 +207,7 @@ class Sub2APIClient:
 
         try:
             headers = self.headers.copy()
-            headers["Idempotency-Key"] = f"import-{int(time.time())}"
+            headers["Idempotency-Key"] = f"import-{uuid.uuid4()}"
             response = cffi_requests.post(
                 url,
                 json=payload,
@@ -698,7 +699,7 @@ class Sub2APIClient:
 
         try:
             headers = self.headers.copy()
-            headers["Idempotency-Key"] = f"codex-{int(time.time())}"
+            headers["Idempotency-Key"] = f"codex-{uuid.uuid4()}"
 
             response = cffi_requests.post(
                 url,
